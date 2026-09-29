@@ -47,7 +47,7 @@ export async function identify(req: Request, res: Response, next: NextFunction) 
     if (!session || session.expiresAt < new Date()) {
       return res.status(401).json({ error: "UNAUTHENTICATED", message: "Invalid or expired session token." });
     }
-    req.identity = { type: "anonymous", sessionToken };
+    req.identity = { type: "anonymous", sessionId: session.id, sessionToken };
     return next();
   }
 

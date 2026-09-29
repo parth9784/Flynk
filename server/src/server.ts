@@ -2,6 +2,7 @@ import cors from "cors";
 import express from "express";
 import { anonymousSessionsRouter } from "./routes/anonymous-sessions.js";
 import { authRouter } from "./routes/auth.js";
+import { sharesRouter } from "./routes/shares.js";
 import { prisma } from "./lib/prisma.js";
 import { redis } from "./lib/redis.js";
 
@@ -23,6 +24,7 @@ app.get("/api/health", async (_req, res) => {
 
 app.use("/api/anonymous-sessions", anonymousSessionsRouter);
 app.use("/api/auth", authRouter);
+app.use("/api/shares", sharesRouter);
 
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error(err);

@@ -15,6 +15,8 @@ model User {
   createdAt     DateTime       @default(now()) @map("created_at")
   updatedAt     DateTime       @updatedAt @map("updated_at")
   refreshTokens RefreshToken[]
+  sentShares     ShareSession[] @relation("ShareSender")
+  receivedShares ShareSession[] @relation("ShareReceiver")
 
   @@map("users")
 }
@@ -39,6 +41,57 @@ model AnonymousSession {
   createdAt    DateTime @default(now()) @map("created_at")
   expiresAt    DateTime @map("expires_at")
 
+  sentShares     ShareSession[] @relation("ShareSenderSession")
+  receivedShares ShareSession[] @relation("ShareReceiverSession")
+
   @@index([ipHash])
   @@map("anonymous_sessions")
+}
+
+enum ShareStatus {
+  pending
+  active
+  completed
+  expired
+  revoked
+}
+
+model ShareSession {
+  id                   String      @id @default(uuid())
+  shareCode            String      @unique @map("share_code")
+  totalSizeBytes        BigInt      @map("total_size_bytes")
+  requiresAuth          Boolean     @map("requires_auth")
+  status                ShareStatus @default(pending)
+  joinAttempts          Int         @default(0) @map("join_attempts")
+  expiresAt             DateTime    @map("expires_at")
+  createdAt             DateTime    @default(now()) @map("created_at")
+
+  senderId          String?           @map("sender_id")
+  sender            User?             @relation("ShareSender", fields: [senderId], references: [id])
+  senderSessionId   String?           @map("sender_session_id")
+  senderSession     AnonymousSession? @relation("ShareSenderSession", fields: [senderSessionId], references: [id])
+
+  receiverId        String?           @map("receiver_id")
+  receiver          User?             @relation("ShareReceiver", fields: [receiverId], references: [id])
+  receiverSessionId String?           @map("receiver_session_id")
+  receiverSession   AnonymousSession? @relation("ShareReceiverSession", fields: [receiverSessionId], references: [id])
+
+  files File[]
+
+  @@index([senderId])
+  @@map("share_sessions")
+}
+
+model File {
+  id             String   @id @default(uuid())
+  shareSessionId String   @map("share_session_id")
+  shareSession   ShareSession @relation(fields: [shareSessionId], references: [id], onDelete: Cascade)
+  filename       String
+  size           BigInt
+  mimeType       String   @map("mime_type")
+  sha256         String?
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([shareSessionId])
+  @@map("files")
 }

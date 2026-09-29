@@ -1,11 +1,11 @@
 import jwt from "jsonwebtoken";
 
-const JWT_SECRET = process.env.JWT_SECRET;
-if (!JWT_SECRET) {
+if (!process.env.JWT_SECRET) {
   throw new Error("JWT_SECRET environment variable is required");
 }
+const JWT_SECRET: string = process.env.JWT_SECRET;
 
-const ACCESS_TOKEN_TTL = `${process.env.JWT_ACCESS_TTL_MIN ?? 15}m`;
+const ACCESS_TOKEN_TTL_SECONDS = Number(process.env.JWT_ACCESS_TTL_MIN ?? 15) * 60;
 
 export interface AccessTokenPayload {
   sub: string; // user id
@@ -13,7 +13,7 @@ export interface AccessTokenPayload {
 
 export function signAccessToken(userId: string): string {
   return jwt.sign({ sub: userId } satisfies AccessTokenPayload, JWT_SECRET, {
-    expiresIn: ACCESS_TOKEN_TTL,
+    expiresIn: ACCESS_TOKEN_TTL_SECONDS,
   });
 }
 
