@@ -11,6 +11,7 @@ import {
 import type { ShareSession } from "@prisma/client";
 import { verifyAccessToken } from "../lib/jwt.js";
 import { prisma } from "../lib/prisma.js";
+import { getAllowedOrigins } from "../lib/cors-origins.js";
 
 interface SocketIdentity {
   type: "user" | "anonymous";
@@ -51,7 +52,7 @@ function isParticipant(identity: SocketIdentity, share: ShareSession): boolean {
 
 export function setupSignaling(httpServer: HttpServer): Server {
   const io = new Server(httpServer, {
-    cors: { origin: process.env.CLIENT_URL ?? "http://localhost:5173" },
+    cors: { origin: getAllowedOrigins() },
   });
 
   io.on("connection", (socket: Socket) => {

@@ -7,11 +7,12 @@ import { sharesRouter } from "./routes/shares.js";
 import { prisma } from "./lib/prisma.js";
 import { redis } from "./lib/redis.js";
 import { setupSignaling } from "./socket/index.js";
+import { getAllowedOrigins } from "./lib/cors-origins.js";
 
 const app = express();
 const PORT = process.env.PORT ?? 5000;
 
-app.use(cors({ origin: process.env.CLIENT_URL ?? "http://localhost:5173" }));
+app.use(cors({ origin: getAllowedOrigins() }));
 app.use(express.json());
 
 app.get("/api/health", async (_req, res) => {
