@@ -16,6 +16,7 @@ import {
   sendFile,
   type IncomingFile,
 } from "./lib/file-transfer";
+import { computeTransferRate, formatBytes, formatDuration, formatSpeed } from "./lib/format";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:5000";
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL ?? "http://localhost:5000";
@@ -31,9 +32,11 @@ function App() {
   const [error, setError] = useState<string | null>(null);
 
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [sendProgress, setSendProgress] = useState<{ sent: number; total: number } | null>(null);
+  const [sendProgress, setSendProgress] = useState<{ sent: number; total: number; startedAt: number } | null>(null);
   const [incomingFile, setIncomingFile] = useState<IncomingFile | null>(null);
-  const [receiveProgress, setReceiveProgress] = useState<{ received: number; total: number } | null>(null);
+  const [receiveProgress, setReceiveProgress] = useState<{ received: number; total: number; startedAt: number } | null>(
+    null,
+  );
   const [verifyResult, setVerifyResult] = useState<"verified" | "failed" | null>(null);
 
   const socketRef = useRef<Socket | null>(null);
@@ -44,6 +47,10 @@ function App() {
   const acceptResolversRef = useRef(new Map<string, (result: { accepted: boolean; reason?: string }) => void>());
   const fileReceiverRef = useRef(new FileReceiver());
   const pendingCompleteRef = useRef(new Map<string, string>()); // fileId -> expected sha256
+  const lastSendUpdateRef = useRef(0);
+  const lastReceiveUpdateRef = useRef(0);
+
+  const PROGRESS_UPDATE_INTERVAL_MS = 150;
 
   function appendLog(line: string) {
     setLog((prev) => [...prev, `${new Date().toLocaleTimeString()} ${line}`]);
@@ -67,6 +74,8 @@ function App() {
         size: message.size,
         totalChunks: message.totalChunks,
       });
+      setReceiveProgress(null);
+      setVerifyResult(null);
       appendLog(`incoming file: ${message.name} (${message.size} bytes)`);
       return;
     }
@@ -126,8 +135,17 @@ function App() {
         const { fileId, chunkIndex, data } = parseChunkFrame(event.data as ArrayBuffer);
         const progress = await fileReceiverRef.current.writeChunk(fileId, data);
         if (progress) {
-          setReceiveProgress({ received: progress.receivedChunks, total: progress.totalChunks });
-          if (progress.receivedChunks === progress.totalChunks) {
+          const now = Date.now();
+          const isLastChunk = progress.receivedChunks === progress.totalChunks;
+          if (isLastChunk || now - lastReceiveUpdateRef.current > PROGRESS_UPDATE_INTERVAL_MS) {
+            lastReceiveUpdateRef.current = now;
+            setReceiveProgress((prev) => ({
+              received: progress.receivedBytes,
+              total: progress.totalBytes,
+              startedAt: prev?.startedAt ?? now,
+            }));
+          }
+          if (isLastChunk) {
             await tryFinalize(fileId);
           }
         }
@@ -271,7 +289,8 @@ function App() {
 
   async function handleSendFile() {
     if (!selectedFile || !controlChannelRef.current || !fileChannelRef.current) return;
-    setSendProgress({ sent: 0, total: selectedFile.size });
+    const startedAt = Date.now();
+    setSendProgress({ sent: 0, total: selectedFile.size, startedAt });
 
     const waitForAccept = (fileId: string) =>
       new Promise<{ accepted: boolean; reason?: string }>((resolve) => {
@@ -279,7 +298,13 @@ function App() {
       });
 
     await sendFile(selectedFile, controlChannelRef.current, fileChannelRef.current, waitForAccept, {
-      onProgress: (sent, total) => setSendProgress({ sent, total }),
+      onProgress: (sent, total) => {
+        const now = Date.now();
+        if (sent === total || now - lastSendUpdateRef.current > PROGRESS_UPDATE_INTERVAL_MS) {
+          lastSendUpdateRef.current = now;
+          setSendProgress({ sent, total, startedAt });
+        }
+      },
       onComplete: () => appendLog("sent file-complete"),
       onRejected: (reason) => appendLog(`file rejected by receiver: ${reason ?? ""}`),
     });
@@ -356,8 +381,16 @@ function App() {
           </button>
           {sendProgress && (
             <p>
-              Sent {sendProgress.sent} / {sendProgress.total} bytes (
-              {Math.round((sendProgress.sent / sendProgress.total) * 100)}%)
+              {(() => {
+                const rate = computeTransferRate(sendProgress.sent, sendProgress.total, sendProgress.startedAt);
+                return (
+                  <>
+                    Sent {formatBytes(sendProgress.sent)} / {formatBytes(sendProgress.total)} (
+                    {rate.percent.toFixed(1)}%) — {formatSpeed(rate.speedBytesPerSecond)} — ETA{" "}
+                    {formatDuration(rate.etaSeconds)}
+                  </>
+                );
+              })()}
             </p>
           )}
         </div>
@@ -379,7 +412,16 @@ function App() {
 
       {receiveProgress && (
         <p>
-          Received chunk {receiveProgress.received} / {receiveProgress.total}
+          {(() => {
+            const rate = computeTransferRate(receiveProgress.received, receiveProgress.total, receiveProgress.startedAt);
+            return (
+              <>
+                Received {formatBytes(receiveProgress.received)} / {formatBytes(receiveProgress.total)} (
+                {rate.percent.toFixed(1)}%) — {formatSpeed(rate.speedBytesPerSecond)} — ETA{" "}
+                {formatDuration(rate.etaSeconds)}
+              </>
+            );
+          })()}
         </p>
       )}
 

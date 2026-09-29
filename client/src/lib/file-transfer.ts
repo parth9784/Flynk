@@ -89,6 +89,7 @@ interface ActiveReceive {
   writer: FileWriter;
   hasher: Sha256Stream;
   receivedChunks: number;
+  receivedBytes: number;
 }
 
 export type SupportsFileSystemAccess = typeof window & {
@@ -115,10 +116,13 @@ export class FileReceiver {
   private active = new Map<string, ActiveReceive>();
 
   begin(meta: IncomingFile, writer: FileWriter): void {
-    this.active.set(meta.fileId, { meta, writer, hasher: new Sha256Stream(), receivedChunks: 0 });
+    this.active.set(meta.fileId, { meta, writer, hasher: new Sha256Stream(), receivedChunks: 0, receivedBytes: 0 });
   }
 
-  async writeChunk(fileId: string, data: ArrayBuffer): Promise<{ receivedChunks: number; totalChunks: number } | null> {
+  async writeChunk(
+    fileId: string,
+    data: ArrayBuffer,
+  ): Promise<{ receivedChunks: number; totalChunks: number; receivedBytes: number; totalBytes: number } | null> {
     const entry = this.active.get(fileId);
     if (!entry) return null;
 
@@ -132,7 +136,13 @@ export class FileReceiver {
     }
 
     entry.receivedChunks += 1;
-    return { receivedChunks: entry.receivedChunks, totalChunks: entry.meta.totalChunks };
+    entry.receivedBytes += bytes.length;
+    return {
+      receivedChunks: entry.receivedChunks,
+      totalChunks: entry.meta.totalChunks,
+      receivedBytes: entry.receivedBytes,
+      totalBytes: entry.meta.size,
+    };
   }
 
   /**
