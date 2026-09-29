@@ -1,3 +1,4 @@
+import { createServer } from "node:http";
 import cors from "cors";
 import express from "express";
 import { anonymousSessionsRouter } from "./routes/anonymous-sessions.js";
@@ -5,6 +6,7 @@ import { authRouter } from "./routes/auth.js";
 import { sharesRouter } from "./routes/shares.js";
 import { prisma } from "./lib/prisma.js";
 import { redis } from "./lib/redis.js";
+import { setupSignaling } from "./socket/index.js";
 
 const app = express();
 const PORT = process.env.PORT ?? 5000;
@@ -31,8 +33,12 @@ app.use((err: unknown, _req: express.Request, res: express.Response, _next: expr
   res.status(500).json({ error: "INTERNAL_ERROR", message: "Something went wrong." });
 });
 
-const server = app.listen(PORT, () => {
+const httpServer = createServer(app);
+setupSignaling(httpServer);
+
+const server = httpServer.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  console.log("Socket.IO initialized");
 });
 
 async function shutdown() {
