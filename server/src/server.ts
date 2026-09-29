@@ -1,6 +1,7 @@
 import cors from "cors";
 import express from "express";
 import { anonymousSessionsRouter } from "./routes/anonymous-sessions.js";
+import { authRouter } from "./routes/auth.js";
 import { prisma } from "./lib/prisma.js";
 import { redis } from "./lib/redis.js";
 
@@ -21,6 +22,12 @@ app.get("/api/health", async (_req, res) => {
 });
 
 app.use("/api/anonymous-sessions", anonymousSessionsRouter);
+app.use("/api/auth", authRouter);
+
+app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error(err);
+  res.status(500).json({ error: "INTERNAL_ERROR", message: "Something went wrong." });
+});
 
 const server = app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
