@@ -4,11 +4,13 @@
   "workspaces": [
     "packages/*",
     "client",
-    "server"
+    "server",
+    "mobile"
   ],
   "scripts": {
     "dev:server": "npm run dev --workspace=server",
     "dev:client": "npm run dev --workspace=client",
+    "dev:mobile": "npm run start --workspace=mobile",
     "build": "npm run build --workspaces --if-present"
   }
 }
