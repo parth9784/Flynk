@@ -39,10 +39,14 @@ function App() {
   );
   const [verifyResult, setVerifyResult] = useState<"verified" | "failed" | null>(null);
 
+  const [chatMessages, setChatMessages] = useState<{ from: "me" | "peer"; text: string }[]>([]);
+  const [chatInput, setChatInput] = useState("");
+
   const socketRef = useRef<Socket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const controlChannelRef = useRef<RTCDataChannel | null>(null);
   const fileChannelRef = useRef<RTCDataChannel | null>(null);
+  const chatChannelRef = useRef<RTCDataChannel | null>(null);
   const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
   const acceptResolversRef = useRef(new Map<string, (result: { accepted: boolean; reason?: string }) => void>());
   const fileReceiverRef = useRef(new FileReceiver());
@@ -153,28 +157,45 @@ function App() {
       };
     }
 
-    function checkBothOpen() {
-      if (controlChannelRef.current?.readyState === "open" && fileChannelRef.current?.readyState === "open") {
+    function wireChatChannel(channel: RTCDataChannel) {
+      chatChannelRef.current = channel;
+      channel.onmessage = (event) => {
+        setChatMessages((prev) => [...prev, { from: "peer", text: event.data as string }]);
+      };
+    }
+
+    function checkAllOpen() {
+      if (
+        controlChannelRef.current?.readyState === "open" &&
+        fileChannelRef.current?.readyState === "open" &&
+        chatChannelRef.current?.readyState === "open"
+      ) {
         setChannelsOpen(true);
-        appendLog("both data channels open");
+        appendLog("all data channels open (control, file, chat)");
       }
     }
 
     if (isInitiator) {
       const control = pc.createDataChannel("control");
       const file = pc.createDataChannel("file");
+      const chat = pc.createDataChannel("chat");
       wireControlChannel(control);
       wireFileChannel(file);
-      control.onopen = checkBothOpen;
-      file.onopen = checkBothOpen;
+      wireChatChannel(chat);
+      control.onopen = checkAllOpen;
+      file.onopen = checkAllOpen;
+      chat.onopen = checkAllOpen;
     } else {
       pc.ondatachannel = (event) => {
         if (event.channel.label === "control") {
           wireControlChannel(event.channel);
-          event.channel.onopen = checkBothOpen;
+          event.channel.onopen = checkAllOpen;
         } else if (event.channel.label === "file") {
           wireFileChannel(event.channel);
-          event.channel.onopen = checkBothOpen;
+          event.channel.onopen = checkAllOpen;
+        } else if (event.channel.label === "chat") {
+          wireChatChannel(event.channel);
+          event.channel.onopen = checkAllOpen;
         }
       };
     }
@@ -332,6 +353,13 @@ function App() {
     setIncomingFile(null);
   }
 
+  function sendChatMessage() {
+    if (!chatInput.trim() || chatChannelRef.current?.readyState !== "open") return;
+    chatChannelRef.current.send(chatInput);
+    setChatMessages((prev) => [...prev, { from: "me", text: chatInput }]);
+    setChatInput("");
+  }
+
   return (
     <main style={{ fontFamily: "sans-serif", padding: "2rem", maxWidth: 600 }}>
       <h1>P2P File Share — File Transfer</h1>
@@ -423,6 +451,28 @@ function App() {
             );
           })()}
         </p>
+      )}
+
+      {channelsOpen && (
+        <div>
+          <h3>Chat</h3>
+          <div style={{ background: "#fafafa", border: "1px solid #ddd", padding: "0.5rem", minHeight: 100, marginBottom: "0.5rem" }}>
+            {chatMessages.map((msg, i) => (
+              <p key={i} style={{ margin: "0.25rem 0" }}>
+                <strong>{msg.from === "me" ? "You" : "Peer"}:</strong> {msg.text}
+              </p>
+            ))}
+          </div>
+          <input
+            value={chatInput}
+            onChange={(e) => setChatInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && sendChatMessage()}
+            placeholder="Type a message"
+          />
+          <button type="button" onClick={sendChatMessage}>
+            Send
+          </button>
+        </div>
       )}
 
       {verifyResult && (
