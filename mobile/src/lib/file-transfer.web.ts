@@ -1,11 +1,13 @@
-import { CHUNK_SIZE, frameChunk, Sha256Stream, type ControlMessage } from "@p2p/shared";
+import { CHUNK_SIZE, Sha256Stream, frameChunk, type ControlMessage } from "@p2p/shared";
+import type { MinimalDataChannel } from "../services/webrtc-types";
+import type { PickedFile } from "./file-types";
 
 const BUFFER_LOW_THRESHOLD = 1 * 1024 * 1024; // 1 MB
 
-function waitForBufferedAmountLow(channel: RTCDataChannel): Promise<void> {
+function waitForBufferedAmountLow(channel: MinimalDataChannel): Promise<void> {
   return new Promise((resolve) => {
     channel.bufferedAmountLowThreshold = BUFFER_LOW_THRESHOLD;
-    channel.addEventListener("bufferedamountlow", () => resolve(), { once: true });
+    channel.addEventListener("bufferedamountlow", () => resolve());
   });
 }
 
@@ -16,20 +18,21 @@ export interface SendFileCallbacks {
 }
 
 export async function sendFile(
-  file: File,
-  controlChannel: RTCDataChannel,
-  fileChannel: RTCDataChannel,
+  file: PickedFile,
+  controlChannel: MinimalDataChannel,
+  fileChannel: MinimalDataChannel,
   waitForAccept: (fileId: string) => Promise<{ accepted: boolean; reason?: string }>,
   callbacks: SendFileCallbacks = {},
 ): Promise<void> {
   const fileId = crypto.randomUUID();
-  const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+  const totalSize = file.size ?? 0;
+  const totalChunks = Math.ceil(totalSize / CHUNK_SIZE);
 
   const startMessage: ControlMessage = {
     type: "file-start",
     fileId,
     name: file.name,
-    size: file.size,
+    size: totalSize,
     totalChunks,
   };
   controlChannel.send(JSON.stringify(startMessage));
@@ -45,7 +48,7 @@ export async function sendFile(
 
   for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
     const start = chunkIndex * CHUNK_SIZE;
-    const end = Math.min(start + CHUNK_SIZE, file.size);
+    const end = Math.min(start + CHUNK_SIZE, totalSize);
     const chunkBuffer = await file.slice(start, end).arrayBuffer();
 
     hasher.update(new Uint8Array(chunkBuffer));
@@ -56,7 +59,7 @@ export async function sendFile(
     fileChannel.send(frameChunk(fileId, chunkIndex, chunkBuffer));
 
     sentBytes = end;
-    callbacks.onProgress?.(sentBytes, file.size);
+    callbacks.onProgress?.(sentBytes, totalSize);
   }
 
   const sha256 = hasher.digestHex();
@@ -65,16 +68,7 @@ export async function sendFile(
   callbacks.onComplete?.(sha256);
 }
 
-// -- Receiving ----------------------------------------------------------------
-
-interface FileSystemWritable {
-  write(data: BufferSource): Promise<void>;
-  close(): Promise<void>;
-}
-
-type FileWriter =
-  | { kind: "fsa"; writable: FileSystemWritable }
-  | { kind: "memory"; chunks: Uint8Array[] };
+// -- Receiving --------------------------------------------------------------
 
 export interface IncomingFile {
   fileId: string;
@@ -82,6 +76,13 @@ export interface IncomingFile {
   size: number;
   totalChunks: number;
 }
+
+interface FileSystemWritable {
+  write(data: BufferSource): Promise<void>;
+  close(): Promise<void>;
+}
+
+type FileWriter = { kind: "fsa"; writable: FileSystemWritable } | { kind: "memory"; chunks: Uint8Array[] };
 
 interface ActiveReceive {
   meta: IncomingFile;
@@ -91,31 +92,44 @@ interface ActiveReceive {
   receivedBytes: number;
 }
 
-export type SupportsFileSystemAccess = typeof window & {
+type SupportsFileSystemAccess = typeof window & {
   showSaveFilePicker: (options?: { suggestedName?: string }) => Promise<{
     createWritable(): Promise<FileSystemWritable>;
   }>;
 };
 
-export function hasFileSystemAccess(): boolean {
+function hasFileSystemAccess(): boolean {
   return "showSaveFilePicker" in window;
 }
 
-/** Must be called from within a user-gesture handler (e.g. an onClick). */
-export async function createFileWriter(suggestedName: string): Promise<FileWriter> {
-  if (hasFileSystemAccess()) {
-    const handle = await (window as SupportsFileSystemAccess).showSaveFilePicker({ suggestedName });
-    const writable = await handle.createWritable();
-    return { kind: "fsa", writable };
-  }
-  return { kind: "memory", chunks: [] };
+function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 export class FileReceiver {
   private active = new Map<string, ActiveReceive>();
 
-  begin(meta: IncomingFile, writer: FileWriter): void {
+  /** Must be called from within a user-gesture handler (e.g. an onClick) —
+   * showSaveFilePicker requires transient activation. */
+  async begin(meta: IncomingFile): Promise<void> {
+    let writer: FileWriter;
+    if (hasFileSystemAccess()) {
+      const handle = await (window as SupportsFileSystemAccess).showSaveFilePicker({ suggestedName: meta.name });
+      writer = { kind: "fsa", writable: await handle.createWritable() };
+    } else {
+      writer = { kind: "memory", chunks: [] };
+    }
     this.active.set(meta.fileId, { meta, writer, hasher: new Sha256Stream(), receivedChunks: 0, receivedBytes: 0 });
+  }
+
+  hasAllChunks(fileId: string): boolean {
+    const entry = this.active.get(fileId);
+    return entry !== undefined && entry.receivedChunks >= entry.meta.totalChunks;
   }
 
   async writeChunk(
@@ -144,20 +158,7 @@ export class FileReceiver {
     };
   }
 
-  /**
-   * The "file-complete" control message travels on a separate DataChannel
-   * from the binary chunks and can arrive before the last chunks do (WebRTC
-   * gives no ordering guarantee across channels). Callers must check this
-   * before finalizing.
-   */
-  hasAllChunks(fileId: string): boolean {
-    const entry = this.active.get(fileId);
-    return entry !== undefined && entry.receivedChunks >= entry.meta.totalChunks;
-  }
-
-  /** Finalizes the write, returning the computed hash and, for the in-memory
-   * fallback, a Blob the caller can offer as a download. */
-  async finish(fileId: string): Promise<{ sha256: string; blob?: Blob; meta: IncomingFile } | null> {
+  async finish(fileId: string): Promise<{ sha256: string; savedInfo: string } | null> {
     const entry = this.active.get(fileId);
     if (!entry) return null;
     this.active.delete(fileId);
@@ -166,19 +167,11 @@ export class FileReceiver {
 
     if (entry.writer.kind === "fsa") {
       await entry.writer.writable.close();
-      return { sha256, meta: entry.meta };
+      return { sha256, savedInfo: "saved to disk" };
     }
 
     const blob = new Blob(entry.writer.chunks as BlobPart[]);
-    return { sha256, blob, meta: entry.meta };
+    downloadBlob(blob, entry.meta.name);
+    return { sha256, savedInfo: "downloaded" };
   }
-}
-
-export function downloadBlob(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
 }

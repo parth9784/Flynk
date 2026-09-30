@@ -34,6 +34,7 @@ function App() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [sendProgress, setSendProgress] = useState<{ sent: number; total: number; startedAt: number } | null>(null);
   const [incomingFile, setIncomingFile] = useState<IncomingFile | null>(null);
+  const [fileDecided, setFileDecided] = useState(false);
   const [receiveProgress, setReceiveProgress] = useState<{ received: number; total: number; startedAt: number } | null>(
     null,
   );
@@ -78,6 +79,7 @@ function App() {
         size: message.size,
         totalChunks: message.totalChunks,
       });
+      setFileDecided(false);
       setReceiveProgress(null);
       setVerifyResult(null);
       appendLog(`incoming file: ${message.name} (${message.size} bytes)`);
@@ -223,21 +225,29 @@ function App() {
       appendLog(`peer-joined: ${JSON.stringify(data)}`);
       if (!isInitiator) return;
 
-      const pc = createPeerConnection((candidate) => {
-        socket.emit(SOCKET_EVENTS.ICE_CANDIDATE, { shareCode, candidate });
-      });
+      const pc = createPeerConnection(
+        (candidate) => {
+          socket.emit(SOCKET_EVENTS.ICE_CANDIDATE, { shareCode, candidate });
+        },
+        (label, state) => appendLog(`${label}: ${state}`),
+      );
       pcRef.current = pc;
       setupDataChannels(pc, true, socket, shareCode);
 
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       socket.emit(SOCKET_EVENTS.OFFER, { shareCode, offer });
+      appendLog("sent offer");
     });
 
     socket.on(SOCKET_EVENTS.OFFER, async (data: { offer: RTCSessionDescriptionInit }) => {
-      const pc = createPeerConnection((candidate) => {
-        socket.emit(SOCKET_EVENTS.ICE_CANDIDATE, { shareCode, candidate });
-      });
+      appendLog("received offer");
+      const pc = createPeerConnection(
+        (candidate) => {
+          socket.emit(SOCKET_EVENTS.ICE_CANDIDATE, { shareCode, candidate });
+        },
+        (label, state) => appendLog(`${label}: ${state}`),
+      );
       pcRef.current = pc;
       setupDataChannels(pc, false, socket, shareCode);
 
@@ -248,9 +258,11 @@ function App() {
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       socket.emit(SOCKET_EVENTS.ANSWER, { shareCode, answer });
+      appendLog("sent answer");
     });
 
     socket.on(SOCKET_EVENTS.ANSWER, async (data: { answer: RTCSessionDescriptionInit }) => {
+      appendLog("received answer");
       const pc = pcRef.current;
       if (!pc) return;
       await pc.setRemoteDescription(data.answer);
@@ -338,6 +350,7 @@ function App() {
       fileReceiverRef.current.begin(incomingFile, writer);
       const message: ControlMessage = { type: "file-accept", fileId: incomingFile.fileId };
       controlChannelRef.current.send(JSON.stringify(message));
+      setFileDecided(true);
       appendLog(`accepted incoming file (${hasFileSystemAccess() ? "streaming to disk" : "buffering in memory"})`);
     } catch (err) {
       // showSaveFilePicker throws AbortError if the user cancels the save dialog.
@@ -358,6 +371,36 @@ function App() {
     chatChannelRef.current.send(chatInput);
     setChatMessages((prev) => [...prev, { from: "me", text: chatInput }]);
     setChatInput("");
+  }
+
+  function startOver() {
+    socketRef.current?.disconnect();
+    pcRef.current?.close();
+    socketRef.current = null;
+    pcRef.current = null;
+    controlChannelRef.current = null;
+    fileChannelRef.current = null;
+    chatChannelRef.current = null;
+    pendingCandidatesRef.current = [];
+    acceptResolversRef.current.clear();
+    fileReceiverRef.current = new FileReceiver();
+    pendingCompleteRef.current.clear();
+
+    setShareCode("");
+    setJoinCodeInput("");
+    setRole("none");
+    setRoomJoined(false);
+    setChannelsOpen(false);
+    setSelectedFile(null);
+    setSendProgress(null);
+    setIncomingFile(null);
+    setFileDecided(false);
+    setReceiveProgress(null);
+    setVerifyResult(null);
+    setChatMessages([]);
+    setChatInput("");
+    setError(null);
+    setLog([]);
   }
 
   return (
@@ -396,6 +439,9 @@ function App() {
 
       {role !== "none" && (
         <p>
+          <button type="button" onClick={startOver}>
+            ← Start Over
+          </button>{" "}
           Role: <strong>{role}</strong> | Share code: <code>{shareCode}</code> | Room:{" "}
           {roomJoined ? "joined" : "connecting..."} | Channels: {channelsOpen ? "open" : "connecting..."}
         </p>
@@ -428,13 +474,18 @@ function App() {
         <div>
           <p>
             Incoming: <strong>{incomingFile.name}</strong> ({incomingFile.size} bytes)
+            {fileDecided && " — accepted, receiving..."}
           </p>
-          <button type="button" onClick={acceptIncomingFile}>
-            Accept
-          </button>{" "}
-          <button type="button" onClick={rejectIncomingFile}>
-            Reject
-          </button>
+          {!fileDecided && (
+            <>
+              <button type="button" onClick={acceptIncomingFile}>
+                Accept
+              </button>{" "}
+              <button type="button" onClick={rejectIncomingFile}>
+                Reject
+              </button>
+            </>
+          )}
         </div>
       )}
 
